@@ -1,0 +1,12 @@
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-OS3\Ports\ARM-Cortex-M\ARMv7-M\os_cpu_c.c
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-OS3\Ports\ARM-Cortex-M\ARMv7-M\../../../Source/os.h
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-OS3\Cfg\Template\os_cfg.h
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-OS3\Cfg\Template\os_cfg_app.h
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-CPU\cpu_core.h
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-CPU\ARM-Cortex-M\ARMv7-M\ARM\cpu.h
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-CPU\cpu_def.h
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-CPU\Cfg\Template\cpu_cfg.h
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-LIB\lib_def.h
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-OS3\Ports\ARM-Cortex-M\ARMv7-M\../../../Source/os_type.h
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-OS3\Ports\ARM-Cortex-M\ARMv7-M\ARM\os_cpu.h
+..\..\output\os_cpu_c.o: ..\..\Middlewares\uC-OS3\uC-OS3\Ports\ARM-Cortex-M\ARMv7-M\../../../Source/os_trace.h

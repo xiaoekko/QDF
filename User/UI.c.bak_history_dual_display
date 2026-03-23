@@ -1,0 +1,1760 @@
+#include "./SYSTEM/sys/sys.h"
+#include "./SYSTEM/usart/usart.h"
+#include "./SYSTEM/delay/delay.h"
+#include "GUI.h"
+
+#include <string.h> 
+
+#include "./BSP/LED/led.h"
+#include "./BSP/LCD/lcd.h"
+#include "./BSP/KEY/key.h"
+#include "./BSP/PRESS/press.h"
+#include "./BSP/Brushless Motor/brushless motor.h"
+#include "./BSP/PushMotor/pushmotor.h"
+#include "./BSP/MAX31865/max31865.h"  
+#include "./BSP/DI/Intput.h"
+#include "./BSP/DO/Output.h"
+#include "./BSP/PCF8563/pcf8563.h"
+#include "./BSP/MB85RC16/mb85rc16.h"
+#include "../Drivers/BSP/MB85RC16/AddrConst.h"
+#include "./BSP/W25QXX/w25qxx.h"
+#include "./BSP/SPI/spi.h"
+#include "./BSP/ADC/adc.h"
+
+
+#include "UI.h"
+#include "keyapp.h"
+#include "task.h"
+#include "FreeModbusApp.h"
+
+#include "version_conf.h"   // 版本信息配置
+
+
+
+char 				acModelStr[30] = "手动模式";
+char 				acStateStr[16] = "已开阀";
+char 				dispbuff[40];
+
+uint8_t 			I2CFlag=0;
+uint8_t 			g_page_reset_flag = 0;	// 页面重置标志
+uint8_t 			g_history_page_refresh_flag = 0;	// 历史页列表刷新标志
+
+enumModelID				ModelID;
+enumErrorAlarm			ErrorAlarm;
+
+uint8_t 			DeviceID;				//设备ID
+uint16_t    		DeepSleepCount;			//休眠计数
+float  				MaxPressure;			//上限压力设置值
+float  				MinPressure;			//下限压力设置值
+
+float battery_voltage = 0.0f;  				//电池电压变量
+float temperature = 0.0f;					//温度变量
+
+uint8_t 			MenuID=0;				//页面ID
+uint8_t				SelectMenuID=1;			//光标位置
+uint8_t				MaxSelectMenuID=10;		//最大光标位置
+
+float				AlarmTemperatureValue; 	//报警温度
+uint8_t 			OverTemperatureFlag;	//超温标志
+
+uint8_t 			OverLoadFlag;			//过载标志
+uint8_t				StopFlag=0;				//停止标志
+
+uint8_t 			E2CWriteFlag=0;
+
+uint32_t 			PrevModelValue;
+uint32_t 			NextModelValue;
+
+uint32_t 			SpiAddrTemp=0;
+uint16_t			I2C_Counter=0;
+
+
+PCF8563_Time_t 		current_time;
+PCF8563_Date_t 		current_date;
+
+I2CData ArrayI2CData[9];
+
+/**
+ * @brief 根据开关位传感器同步阀门显示状态
+ */
+void SyncValveDisplayStateFromSensors(void)
+{
+    if((OpenSensor == GPIO_PIN_RESET) && (CloseSensor == GPIO_PIN_SET)) {
+        uCoilsStatusLO.Bit2 = 1;
+        uCoilsStatusLO.Bit3 = 0;
+        snprintf(acStateStr, 10, "%s", "已开阀       ");
+        ErrorAlarm = Opened;
+    }
+    else if((OpenSensor == GPIO_PIN_SET) && (CloseSensor == GPIO_PIN_RESET)) {
+        uCoilsStatusLO.Bit2 = 0;
+        uCoilsStatusLO.Bit3 = 1;
+        snprintf(acStateStr, 10, "%s", "已关阀       ");
+        ErrorAlarm = Closed;
+    }
+    else {
+        uCoilsStatusLO.Bit2 = 0;
+        uCoilsStatusLO.Bit3 = 0;
+        snprintf(acStateStr, 10, "%s", "          ");
+        ErrorAlarm = NoError;
+    }
+}
+
+/**
+ * @brief 系统初始化函数
+ * @note  初始化所有全局变量和系统状态标志
+ */
+void SystemInitFunc(void)
+{
+    OverPressDisFlag = 0;
+    UnderPressDisFlag = 0;
+
+    LowFreqFlag = 0;
+    LowFreqCount = 0;
+    WakeupCount = 0;
+    DeepSleepCount = 0;
+
+    number = 1;
+    FlashLocate = 0;
+
+    DeviceID = 1;
+    AlarmTemperatureValue = 50.0f;
+    OverTemperatureFlag = 0;
+
+    g_press_data.up_pressure = 3.0f;
+    OverLoadFlag = 0;
+
+    SelectMenuID = 1;
+    MaxSelectMenuID = 10;
+
+    MotorStop();
+
+    MaxPressure = 10.0f;
+    MinPressure = 2.0f;
+
+    uCoilsStatusLO.Bit4 = 0;
+    uCoilsStatusLO.Bit5 = 0;
+    uCoilsStatusLO.Byte = 0;
+    uCoilsStatusHI.Byte = 0;
+    uInputStatusLO.Byte = 0;
+    uInputStatusHI.Byte = 0;
+
+    I2C_Counter = 0;
+    StopFlag = 0;
+
+    PrevModelValue = 0;
+    NextModelValue = 0;
+    InterimState = 0;
+
+    SyncValveDisplayStateFromSensors();
+
+    {
+        PCF8563_DateTime_t datetime;
+        if (PCF8563_GetDateTime(&datetime) == PCF8563_OK) {
+            current_time = datetime.time;
+            current_date = datetime.date;
+        } else {
+            current_time.hour = 12;
+            current_time.minute = 0;
+            current_time.second = 0;
+            current_date.year = 24;
+            current_date.month = 1;
+            current_date.day = 1;
+            current_date.weekday = 1;
+
+            datetime.time = current_time;
+            datetime.date = current_date;
+            PCF8563_SetDateTime(&datetime);
+        }
+    }
+}
+
+void CheckSystemFirstRun(void)
+{
+    if(AT24CXX_ReadUchar(ADR_SYSTEM_FIRST_RUN) != 0x55) {
+        AT24CXX_WriteUchar(ADR_SYSTEM_FIRST_RUN, 0x55);
+        HAL_Delay(10);
+
+        ModelID = HandModel;
+        SetupModel(ModelID);
+        AT24CXX_WriteUchar(ADR_MODELID, ModelID);
+        AT24CXX_WriteUchar(ADR_DEVICEID, 1);
+        AT24CXX_WriteFloat(ADR_MAXPRESSURE, 10.0f);
+        AT24CXX_WriteFloat(ADR_MINPRESSURE, 2.0f);
+        AT24CXX_WriteFloat(ADR_ALARM_TEMP, 100.0f);
+        AT24CXX_WriteUint(ADDR_DEEP_SLEEP_ADDR, 0);
+        MyI2C_WriteUlong(ADDR_SPI_FLASH_ADDR, 1);
+        SyncTimeToRTC();
+    }
+}
+
+uint32_t FlashRead_Uint32(uint32_t adr)
+{
+    return MyI2C_ReadUlong(ADDR_SPI_FLASH_ADDR + adr);
+}
+
+void Flash_History_Read(uint32_t number)
+{
+    uint8_t i;
+    uint8_t s[4] = {0};
+    uint8_t s1[4] = {0};
+
+    for(i = 0; i < 17; i++) {
+        HistoryBuffRead[i] = 0;
+    }
+
+    W25QXX_Read(HistoryBuffRead, number * 17, 17);
+
+    s[0] = HistoryBuffRead[9] & 0xFF;
+    s[1] = HistoryBuffRead[10] & 0xFF;
+    s[2] = HistoryBuffRead[11] & 0xFF;
+    s[3] = HistoryBuffRead[12] & 0xFF;
+
+    s1[0] = HistoryBuffRead[13] & 0xFF;
+    s1[1] = HistoryBuffRead[14] & 0xFF;
+    s1[2] = HistoryBuffRead[15] & 0xFF;
+    s1[3] = HistoryBuffRead[16] & 0xFF;
+
+    HistoryData.Year = HistoryBuffRead[0] & 0x3F;
+    HistoryData.Month = HistoryBuffRead[1] & 0x0F;
+    HistoryData.Day = HistoryBuffRead[2] & 0x1F;
+    HistoryData.Hour = HistoryBuffRead[3] & 0x3F;
+    HistoryData.Min = HistoryBuffRead[4] & 0x3F;
+    HistoryData.Second = HistoryBuffRead[5] & 0x3F;
+    HistoryData.ModelID = (enumModelID)(HistoryBuffRead[6] & 0x07);
+    HistoryData.DeviceID = HistoryBuffRead[7] & 0xFF;
+    HistoryData.Alarm = (enumErrorAlarm)(HistoryBuffRead[8] & 0x0F);
+
+    HistoryData.Pressure = (s[0] + (s[1] << 8) + (s[2] << 16) + (s[3] << 24)) / 100.0f;
+    HistoryData.Temperature = (s1[0] + (s1[1] << 8) + (s1[2] << 16) + (s1[3] << 24)) / 100.0f;
+}
+
+void Flash_History_Write(uint8_t model, uint8_t Alarm, float pressure, float temperature)
+{
+    uint32_t number;
+    uint32_t TmpPressure = 0;
+    uint32_t TmpTemperature = 0;
+
+    TmpPressure = (uint32_t)(pressure * 100);
+    TmpTemperature = (uint32_t)(temperature * 100);
+
+    number = FlashRead_Uint32(0);
+    if(number > 524288 - 2) {
+        number = 1;
+    }
+    FlashLocate = number;
+
+    HistoryBuffWrite[0] = (current_date.year) & 0x3F;
+    HistoryBuffWrite[1] = current_date.month & 0x0F;
+    HistoryBuffWrite[2] = current_date.day & 0x1F;
+    HistoryBuffWrite[3] = current_time.hour & 0x1F;
+    HistoryBuffWrite[4] = current_time.minute & 0x3F;
+    HistoryBuffWrite[5] = current_time.second & 0x3F;
+
+    HistoryBuffWrite[6] = model & 0x07;
+    HistoryBuffWrite[7] = DeviceID & 0xFF;
+    HistoryBuffWrite[8] = Alarm & 0x0F;
+
+    HistoryBuffWrite[9] = (TmpPressure) & 0xFF;
+    HistoryBuffWrite[10] = (TmpPressure >> 8) & 0xFF;
+    HistoryBuffWrite[11] = (TmpPressure >> 16) & 0xFF;
+    HistoryBuffWrite[12] = (TmpPressure >> 24) & 0xFF;
+
+    HistoryBuffWrite[13] = (TmpTemperature) & 0xFF;
+    HistoryBuffWrite[14] = (TmpTemperature >> 8) & 0xFF;
+    HistoryBuffWrite[15] = (TmpTemperature >> 16) & 0xFF;
+    HistoryBuffWrite[16] = (TmpTemperature >> 24) & 0xFF;
+
+    W25QXX_Write(HistoryBuffWrite, number * 17, 17);
+    number++;
+
+    MyI2C_WriteUlong(ADDR_SPI_FLASH_ADDR, number);
+}
+
+
+void SetupState(enumErrorAlarm mErrorAlarm)
+{
+    if((InterimState == 9) && (mErrorAlarm == Opened))
+    {
+        mErrorAlarm = Closing;
+    }
+
+    switch(mErrorAlarm)
+    {
+        case NoError:
+            snprintf(acStateStr, 10, "%s", "          ");
+            ErrorAlarm = NoError;
+            break;
+        case CloseError:
+            snprintf(acStateStr, 10, "%s", "关阀故障      ");
+            ErrorAlarm = CloseError;
+            break;
+        case OpenError:
+            snprintf(acStateStr, 10, "%s", "开阀故障      ");
+            ErrorAlarm = OpenError;
+            break;
+        case SensorError:
+            snprintf(acStateStr, 10, "%s", "传感器故障");
+            ErrorAlarm = SensorError;
+            break;
+        case Opening:
+            snprintf(acStateStr, 10, "%s", "开阀中       ");
+            ErrorAlarm = Opening;
+            break;
+        case Closing:
+            snprintf(acStateStr, 10, "%s", "关阀中       ");
+            ErrorAlarm = Closing;
+            break;
+        case Opened:
+            snprintf(acStateStr, 10, "%s", "已开阀       ");
+            ErrorAlarm = Opened;
+            break;
+        case Closed:
+            snprintf(acStateStr, 10, "%s", "已关阀       ");
+            ErrorAlarm = Closed;
+            break;
+        case OverPressClose:
+            snprintf(acStateStr, 10, "%s", "超压关阀      ");
+            ErrorAlarm = OverPressClose;
+            break;
+        case UnderPressClose:
+            snprintf(acStateStr, 10, "%s", "欠压关阀      ");
+            ErrorAlarm = UnderPressClose;
+            break;
+        case OverTempClose:
+            snprintf(acStateStr, 10, "%s", "超温关阀      ");
+            ErrorAlarm = OverTempClose;
+            break;
+        case RemoteClose:
+            snprintf(acStateStr, 10, "%s", "远程关阀      ");
+            ErrorAlarm = RemoteClose;
+            break;
+        case MotorStallError:
+            snprintf(acStateStr, 10, "%s", "电机堵转      ");
+            ErrorAlarm = MotorStallError;
+            break;
+        default:
+            break;
+    }
+}
+
+
+
+
+	
+
+void 		SetupModel(enumModelID mModelID)				//	运行模式
+{
+
+	switch(mModelID)
+    {
+		case HandModel:
+    	{
+			sprintf(acModelStr,"%s","手动模式");
+			MaxSelectMenuID=10;
+		}
+			break;
+
+		case AutoModel:
+    	{
+			sprintf(acModelStr,"%s","自动模式");
+			MaxSelectMenuID=10;
+		}
+			break;
+
+		default:break;
+		}
+}
+
+
+
+
+void 		FirstInterfaceFunc(void)      					//	第一页 - 主界面
+{
+    static uint8_t first_draw = 1;
+    static uint8_t last_menu_id = 0xFF;
+    
+    // 静态变量存储上次显示的值
+    static char last_time_str[20] = {0};
+    static char last_temp_str[10] = {0};
+    static char last_pressure_str[10] = {0};
+    static char last_battery_str[10] = {0};
+    static uint8_t last_open_sensor = 0xFF;
+    static uint8_t last_close_sensor = 0xFF;
+    static char last_state_str[32] = {0};
+    static char last_model_str[32] = {0};
+    static uint8_t last_battery_level = 0xFF;
+    
+    // 检查页面重置标志
+    if(g_page_reset_flag) {
+        first_draw = 1;
+        g_page_reset_flag = 0;
+        
+        // 清空所有静态变量，强制重新绘制所有参数
+        memset(last_time_str, 0, sizeof(last_time_str));
+        memset(last_temp_str, 0, sizeof(last_temp_str));
+        memset(last_pressure_str, 0, sizeof(last_pressure_str));
+        memset(last_battery_str, 0, sizeof(last_battery_str));
+        memset(last_state_str, 0, sizeof(last_state_str));
+        memset(last_model_str, 0, sizeof(last_model_str));
+        last_open_sensor = 0xFF;
+        last_close_sensor = 0xFF;
+        last_battery_level = 0xFF;
+    }
+    
+    // 检测页面切换，重置first_draw
+    if(last_menu_id != MenuID) {
+        first_draw = 1;
+        last_menu_id = MenuID;
+        
+        // 同样清空所有静态变量
+        memset(last_time_str, 0, sizeof(last_time_str));
+        memset(last_temp_str, 0, sizeof(last_temp_str));
+        memset(last_pressure_str, 0, sizeof(last_pressure_str));
+        memset(last_battery_str, 0, sizeof(last_battery_str));
+        memset(last_state_str, 0, sizeof(last_state_str));
+        memset(last_model_str, 0, sizeof(last_model_str));
+        last_open_sensor = 0xFF;
+        last_close_sensor = 0xFF;
+        last_battery_level = 0xFF;
+    }
+    
+    // 当前值变量
+    char current_time_str[20];
+    char current_temp_str[10];
+    char current_pressure_str[10];
+    char current_battery_str[10];
+    uint8_t current_open_sensor;
+    uint8_t current_close_sensor;
+    uint8_t current_battery_level;
+    
+    I2CFlag = 1;
+    SetupModel(ModelID);
+    
+    // 读取时间
+    static uint32_t last_time_update = 0;
+    if (HAL_GetTick() - last_time_update > 1000) {
+        PCF8563_GetTime(&current_time);
+        PCF8563_GetDate(&current_date);
+        last_time_update = HAL_GetTick();
+    }
+    //读取温度，电压
+    static uint32_t last_temp_time = 0;
+    if (HAL_GetTick() - last_temp_time > 500) {
+        temperature = MAX31865_GetTemperature();
+        battery_voltage = Get_Battery_Voltage();
+        last_temp_time = HAL_GetTick();
+    }
+    
+    // 生成当前显示字符串
+    sprintf(current_time_str, "%02d:%02d:%02d", current_time.hour, current_time.minute, current_time.second);
+    
+    // 显示温度限制逻辑
+    float display_temp = temperature;
+    if(display_temp > 125.0f)
+    {
+        display_temp = 125.0f;
+    }
+    sprintf(current_temp_str, "%.1f", display_temp);
+
+    sprintf(current_pressure_str, "%.1f", g_press_data.up_pressure);
+    // 计算电池电量等级
+    float display_voltage = battery_voltage;
+    if (battery_voltage < 1.0f) {
+        display_voltage = 24.0f;
+    }
+    sprintf(current_battery_str, "%.1fV", display_voltage);
+
+    current_open_sensor = OpenSensor;
+    current_close_sensor = CloseSensor;
+
+    if(display_voltage <= 20) current_battery_level = 1;
+    else if(display_voltage < 24) current_battery_level = 2;
+    else if(display_voltage < 33) current_battery_level = 3;
+    else current_battery_level = 4;
+    
+    // 首次绘制完整界面
+    if(first_draw) {
+        // ==================== 背景设置 ====================
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_Clear();
+        
+        // 绘制渐变背景
+        GUI_RECT bg_rect = {0, 0, 320, 240};
+        GUI_DrawGradientV(bg_rect.x0, bg_rect.y0, bg_rect.x1, bg_rect.y1, GUI_LIGHTBLUE, GUI_WHITE);
+        
+        // ==================== 顶部标题栏 (0-35) ====================
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRoundedRect(5, 5, 315, 35, 8);
+        GUI_SetColor(GUI_LIGHTBLUE);
+        GUI_DrawRoundedRect(5, 5, 315, 35, 8);
+        
+        // 添加标题栏阴影
+        GUI_SetColor(GUI_GRAY_C0);
+        GUI_DrawLine(6, 36, 316, 36);
+        
+        // ==================== 第一行：设备信息和温度 (40-90) ====================
+        
+        // 设备信息卡片 (左侧)
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(10, 40, 155, 90, 8);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DrawRoundedRect(10, 40, 155, 90, 8);
+        
+        // 设备信息标题
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("设备信息", 15, 45);
+        
+        // 设备ID显示
+        char device_id_str[10];
+        sprintf(device_id_str, "ID:%03d", DeviceID);
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DispStringAt(device_id_str, 16, 65);
+        
+        // 温度卡片 (右侧)
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(165, 40, 310, 90, 8);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DrawRoundedRect(165, 40, 310, 90, 8);
+        
+        // 温度标题
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("温度", 170, 45);
+        
+        // ==================== 第二行：压力信息 (95-145) ====================
+        
+        // 超压压力卡片
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(10, 95, 105, 145, 8);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DrawRoundedRect(10, 95, 105, 145, 8);
+        
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("超压压力", 15, 100);
+        
+        // 超压压力值显示
+        char max_pressure_str[10];
+        sprintf(max_pressure_str, "%.1f", MaxPressure);
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DispStringAt(max_pressure_str, 20, 120);
+        GUI_SetFont(&GUI_Font16_ASCII);
+        GUI_DispStringAt("MPa", 55, 125);
+        
+        // 欠压压力卡片
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(112, 95, 207, 145, 8);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DrawRoundedRect(112, 95, 207, 145, 8);
+        
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("欠压压力", 117, 100);
+        
+        // 欠压压力值显示
+        char min_pressure_str[10];
+        sprintf(min_pressure_str, "%.1f", MinPressure);
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DispStringAt(min_pressure_str, 120, 120);
+        GUI_SetFont(&GUI_Font16_ASCII);
+        GUI_DispStringAt("MPa", 160, 125);
+        
+        // 当前压力卡片
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(214, 95, 310, 145, 8);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DrawRoundedRect(214, 95, 310, 145, 8);
+        
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("当前压力", 219, 100);
+        
+        // ==================== 第三行：状态信息 (150-200) ====================
+        
+        // 运行状态卡片
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(10, 150, 150, 200, 8);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DrawRoundedRect(10, 150, 150, 200, 8);
+        
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("运行状态", 15, 155);
+        
+        // 阀门状态卡片
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(160, 150, 310, 200, 8);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DrawRoundedRect(160, 150, 310, 200, 8);
+        
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("阀门开位", 165, 155);
+        GUI_DispStringAt("阀门关位", 240, 155);
+        
+        // ==================== 底部信息栏 (205-235) ====================
+        
+        // 底部信息背景
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRoundedRect(10, 205, 310, 235, 8);
+        GUI_SetColor(GUI_LIGHTBLUE);
+        GUI_DrawRoundedRect(10, 205, 310, 235, 8);
+        
+        // 底部公司名称显示
+        GUI_SetFont(&GUI_FontHZ_SimSun_2424);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_LIGHTGRAY);
+        GUI_DispStringAt("希佛隆阀门集团有限公司", 30, 210);
+        
+        // 添加整体阴影效果
+        GUI_SetColor(GUI_GRAY_C0);
+        GUI_DrawLine(11, 236, 311, 236);
+        GUI_DrawLine(311, 41, 311, 236);
+        
+        first_draw = 0;
+    }
+    
+    // ==================== 局部更新区域 ====================
+    
+    //  顶部标题栏 - 运行模式
+    if(strcmp(last_model_str, acModelStr) != 0) {
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRect(10, 10, 120, 30);
+        GUI_SetFont(&GUI_FontHZ_SimSun_2424);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt(acModelStr, 12, 8);
+        strcpy(last_model_str, acModelStr);
+    }
+    
+    //  顶部标题栏 - 时间
+    if(strcmp(last_time_str, current_time_str) != 0) {
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRect(130, 8, 210, 32);
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt(current_time_str, 132, 9);  // 居中显示时间
+        strcpy(last_time_str, current_time_str);
+    }
+    
+    //  顶部标题栏 - 电池状态
+    if(last_battery_level != current_battery_level || strcmp(last_battery_str, current_battery_str) != 0) {
+
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRect(220, 8, 310, 30);
+        
+        // 绘制电池外框
+        GUI_SetColor(GUI_WHITE);
+        GUI_DrawRect(235, 13, 260, 27);  // 电池主体
+        GUI_FillRect(260, 17, 262, 23);  // 电池正极
+        
+        // 根据电量等级绘制电池内部
+        GUI_RECT battery_fill = {237, 14, 237 + (current_battery_level * 5), 24};
+        
+        switch(current_battery_level) {
+            case 1: GUI_SetColor(GUI_RED); break;     // 低电量红色
+            case 2: GUI_SetColor(GUI_ORANGE); break; // 中低电量橙色
+            case 3: GUI_SetColor(GUI_YELLOW); break; // 中等电量黄色
+            case 4: GUI_SetColor(GUI_GREEN); break;  // 高电量绿色
+        }
+        
+        GUI_FillRectEx(&battery_fill);
+        
+        // 电压数值
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_Font16_ASCII);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt(current_battery_str, 270, 12);
+        
+        last_battery_level = current_battery_level;
+        strcpy(last_battery_str, current_battery_str);
+    }
+    
+    //  温度显示
+    if(strcmp(last_temp_str, current_temp_str) != 0) {
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRect(170, 65, 305, 85);
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DispStringAt(current_temp_str, 170, 65);
+        
+        int x_dist = GUI_GetStringDistX(current_temp_str);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("℃", 170 + x_dist + 2, 65);
+
+        strcpy(last_temp_str, current_temp_str);
+    }
+    
+    //  当前压力显示
+    if(strcmp(last_pressure_str, current_pressure_str) != 0) {
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRect(219, 115, 305, 140);
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DispStringAt(current_pressure_str, 220, 120);
+        GUI_SetFont(&GUI_Font16_ASCII);
+        GUI_DispStringAt("MPa", 260, 125);
+        strcpy(last_pressure_str, current_pressure_str);
+    }
+    
+    //  运行状态显示
+    if(strcmp(last_state_str, acStateStr) != 0) {
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRect(15, 175, 70, 195);
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt(acStateStr, 15, 178);
+        strcpy(last_state_str, acStateStr);
+    }
+    
+    //  开阀状态指示器
+    if(last_open_sensor != current_open_sensor) {
+       
+        // 绘制开阀状态指示器
+        if(current_open_sensor == 0) {
+            // 开启状态 - 绿色圆形
+            GUI_SetColor(GUI_GREEN);
+            GUI_FillCircle(200, 185, 8);
+            GUI_SetColor(GUI_DARKGREEN);
+            GUI_DrawCircle(200, 185, 8);
+        } else {
+            // 关闭状态 - 灰色圆形
+            GUI_SetColor(GUI_GRAY);
+            GUI_FillCircle(200, 185, 8);
+            GUI_SetColor(GUI_DARKGRAY);
+            GUI_DrawCircle(200, 185, 8);
+        }
+        
+        last_open_sensor = current_open_sensor;
+    }
+    
+    //  关阀状态指示器
+    if(last_close_sensor != current_close_sensor) {
+
+        // 绘制关阀状态指示器
+        if(current_close_sensor == 0) {
+            // 开启状态 - 绿色圆形
+            GUI_SetColor(GUI_GREEN);
+            GUI_FillCircle(275, 185, 8);
+            GUI_SetColor(GUI_DARKGREEN);
+            GUI_DrawCircle(275, 185, 8);
+        } else {
+            // 关闭状态 - 灰色圆形
+            GUI_SetColor(GUI_GRAY);
+            GUI_FillCircle(275, 185, 8);
+            GUI_SetColor(GUI_DARKGRAY);
+            GUI_DrawCircle(275, 185, 8);
+        }
+        
+        last_close_sensor = current_close_sensor;
+    }   
+}
+
+
+void 		SecondInterfaceFunc(void)  						//	第二页 - 设置界面
+{       
+    static uint8_t first_draw = 1;
+    static uint8_t last_menu_id = 0xFF;
+    
+    // 静态变量存储上次显示的值
+    static char last_time_str[20] = {0};
+    static char last_battery_str[10] = {0};
+    static uint8_t last_battery_level = 0xFF;
+    static uint8_t last_select_menu_id = 0xFF;
+    static char last_year_str[5] = {0};
+    static char last_month_str[5] = {0};
+    static char last_day_str[5] = {0};
+    static char last_hour_str[5] = {0};
+    static char last_minute_str[5] = {0};
+    static char last_second_str[5] = {0};
+    static char last_device_id_str[10] = {0};
+    static char last_temp_str[10] = {0};
+    static char last_max_pressure_str[10] = {0};
+    static char last_min_pressure_str[10] = {0};
+    
+    // 检查页面重置标志或页面切换
+    if(g_page_reset_flag || last_menu_id != MenuID) {
+        first_draw = 1;
+        g_page_reset_flag = 0;
+        last_menu_id = MenuID;
+        
+        // 清空所有静态变量
+        memset(last_time_str, 0, sizeof(last_time_str));
+        memset(last_battery_str, 0, sizeof(last_battery_str));
+        last_battery_level = 0xFF;
+        last_select_menu_id = 0xFF;
+        memset(last_year_str, 0, sizeof(last_year_str));
+        memset(last_month_str, 0, sizeof(last_month_str));
+        memset(last_day_str, 0, sizeof(last_day_str));
+        memset(last_hour_str, 0, sizeof(last_hour_str));
+        memset(last_minute_str, 0, sizeof(last_minute_str));
+        memset(last_second_str, 0, sizeof(last_second_str));
+        memset(last_device_id_str, 0, sizeof(last_device_id_str));
+        memset(last_temp_str, 0, sizeof(last_temp_str));
+        memset(last_max_pressure_str, 0, sizeof(last_max_pressure_str));
+        memset(last_min_pressure_str, 0, sizeof(last_min_pressure_str));
+    }
+    
+    // 当前值变量声明
+    char current_time_str[20], current_battery_str[10];
+    char current_year_str[5], current_month_str[5], current_day_str[5];
+    char current_hour_str[5], current_minute_str[5], current_second_str[5];
+    char current_device_id_str[10], current_temp_str[10];
+    char current_max_pressure_str[10], current_min_pressure_str[10];
+    uint8_t current_battery_level;
+    
+    I2CFlag = 1;
+    
+    // 定时读取传感器数据
+    static uint32_t last_time_update = 0;
+    if (HAL_GetTick() - last_time_update > 1000) {
+        PCF8563_GetTime(&current_time);
+        last_time_update = HAL_GetTick();
+    }
+    
+    // 生成当前显示字符串
+    sprintf(current_time_str, "%02d:%02d:%02d", current_time.hour, current_time.minute, current_time.second);
+    
+    // 计算电池电量等级并处理未接电池的情况
+    float display_voltage = battery_voltage;
+    if (battery_voltage < 1.0f) {
+        display_voltage = 24.0f;
+    }
+    sprintf(current_battery_str, "%.1fV", display_voltage);
+
+    if(display_voltage <= 20) current_battery_level = 1;
+    else if(display_voltage < 24) current_battery_level = 2;
+    else if(display_voltage < 33) current_battery_level = 3;
+    else current_battery_level = 4;
+
+    sprintf(current_year_str, "20%02d", current_date.year);
+    sprintf(current_month_str, "%02d", current_date.month);
+    sprintf(current_day_str, "%02d", current_date.day);
+    sprintf(current_hour_str, "%02d", current_time.hour);
+    sprintf(current_minute_str, "%02d", current_time.minute);
+    sprintf(current_second_str, "%02d", current_time.second);
+    sprintf(current_device_id_str, "%03d", DeviceID);
+    sprintf(current_temp_str, "%.0f", AlarmTemperatureValue);   
+    sprintf(current_max_pressure_str, "%.1f", MaxPressure);
+    sprintf(current_min_pressure_str, "%.1f", MinPressure);
+    
+	
+	
+    /*==============================================界面绘制宏定义======================================================*/	
+
+    // 1. 设备参数标签绘制宏
+    #define DRAW_DEVICE_LABELS() \
+    GUI_SetFont(&GUI_FontHZ_SimSun_1616); \
+    GUI_DispStringAt("设备ID:", 25, 175); \
+    GUI_DispStringAt("报警温度:", 25, 195); \
+    GUI_DispStringAt("超压压力:", 160, 175); \
+    GUI_DispStringAt("欠压压力:", 160, 195); \
+    GUI_DispStringAt("℃", 135, 195); \
+    GUI_SetFont(&GUI_Font16_ASCII); \
+    GUI_DispStringAt("MPa", 280, 177); \
+    GUI_DispStringAt("MPa", 280, 197);
+
+    #define DRAW_DATETIME_SEPARATORS() \
+    GUI_SetBkColor(GUI_WHITE); \
+    GUI_SetFont(&GUI_Font20_ASCII); \
+    GUI_SetColor(GUI_BLACK); \
+    GUI_DispStringAt("-", 70, 90); \
+    GUI_DispStringAt("-", 110, 90); \
+    GUI_DispStringAt(":", 200, 90); \
+    GUI_DispStringAt(":", 240, 90);
+
+    // 2. 时间日期参数显示宏
+    #define DRAW_DATETIME_PARAMS() \
+    GUI_SetBkColor(GUI_WHITE); \
+    GUI_SetFont(&GUI_Font20_ASCII); \
+    GUI_SetColor((SelectMenuID == 1) ? GUI_BLACK : 0x2F4F4F); \
+    GUI_DispStringAt(current_year_str, 25, 90); \
+    DRAW_DATETIME_SEPARATORS(); \
+    GUI_SetColor((SelectMenuID == 2) ? GUI_BLACK : 0x2F4F4F); \
+    GUI_DispStringAt(current_month_str, 85, 90); \
+    GUI_SetColor((SelectMenuID == 3) ? GUI_BLACK : 0x2F4F4F); \
+    GUI_DispStringAt(current_day_str, 125, 90); \
+    GUI_SetColor((SelectMenuID == 4) ? GUI_BLACK : 0x2F4F4F); \
+    GUI_DispStringAt(current_hour_str, 175, 90); \
+    GUI_SetColor((SelectMenuID == 5) ? GUI_BLACK : 0x2F4F4F); \
+    GUI_DispStringAt(current_minute_str, 215, 90); \
+    GUI_SetColor((SelectMenuID == 6) ? GUI_BLACK : 0x2F4F4F); \
+    GUI_DispStringAt(current_second_str, 255, 90);
+
+    // 3. 设备参数显示宏
+    #define DRAW_DEVICE_PARAMS() \
+    GUI_SetFont(&GUI_Font20_ASCII); \
+    GUI_SetColor((SelectMenuID == 7) ? GUI_BLACK : 0x2F4F4F); \
+    GUI_DispStringAt(current_device_id_str, 95, 175); \
+    GUI_SetColor((SelectMenuID == 8) ? GUI_BLACK : 0x2F4F4F); \
+    GUI_DispStringAt(current_temp_str, 95, 195); \
+    GUI_SetColor((SelectMenuID == 9) ? GUI_BLACK : 0x2F4F4F); \
+    GUI_DispStringAt(current_max_pressure_str, 235, 175); \
+    GUI_SetColor((SelectMenuID == 10) ? GUI_BLACK : 0x2F4F4F); \
+    GUI_DispStringAt(current_min_pressure_str, 235, 195);
+
+    // 4. 选择指示器绘制宏
+    #define DRAW_SELECTION_INDICATOR() \
+    if(SelectMenuID >= 1 && SelectMenuID <= 10) { \
+        const int coords[10][4] = { \
+            {23, 88, 63, 108}, {83, 88, 113, 108}, {125, 88, 152, 108}, \
+            {173, 88, 203, 108}, {213, 88, 243, 108}, {253, 88, 283, 108}, \
+            {93, 173, 135, 193}, {93, 193, 135, 213}, \
+            {233, 173, 275, 193}, {233, 193, 275, 213} \
+        }; \
+        int idx = SelectMenuID - 1; \
+        int highlight_x1 = coords[idx][0]; \
+        int highlight_y1 = coords[idx][1]; \
+        int highlight_x2 = coords[idx][2]; \
+        int highlight_y2 = coords[idx][3]; \
+        if(SelectMenuID == 8) { \
+            highlight_x2 = 125; \
+        } \
+        \
+        /* 绘制更美观的选择框 - 使用纯色底和粗边框 */ \
+        GUI_SetColor(0x00E5FF); /* 青色背景 */ \
+        GUI_FillRoundedRect(highlight_x1-2, highlight_y1-2, highlight_x2+2, highlight_y2+2, 4); \
+        \
+        /* 重新绘制被覆盖的参数文本 */ \
+        GUI_SetBkColor(0x00E5FF); \
+        GUI_SetFont(&GUI_Font20_ASCII); \
+        GUI_SetColor(GUI_BLACK); /* 黑色字体对比度高 */ \
+        \
+        switch(SelectMenuID) { \
+            case 1: GUI_DispStringAt(current_year_str, 25, 90); break; \
+            case 2: GUI_DispStringAt(current_month_str, 85, 90); break; \
+            case 3: GUI_DispStringAt(current_day_str, 125, 90); break; \
+            case 4: GUI_DispStringAt(current_hour_str, 175, 90); break; \
+            case 5: GUI_DispStringAt(current_minute_str, 215, 90); break; \
+            case 6: GUI_DispStringAt(current_second_str, 255, 90); break; \
+            case 7: GUI_DispStringAt(current_device_id_str, 95, 175); break; \
+            case 8: GUI_DispStringAt(current_temp_str, 95, 195); break; \
+            case 9: GUI_DispStringAt(current_max_pressure_str, 235, 175); break; \
+            case 10: GUI_DispStringAt(current_min_pressure_str, 235, 195); break; \
+        } \
+        \
+        /* 绘制粗边框 */ \
+        GUI_SetColor(0xFF0000); /* 红色边框非常醒目 */ \
+        GUI_SetPenSize(2); \
+        GUI_DrawRoundedRect(highlight_x1-2, highlight_y1-2, highlight_x2+2, highlight_y2+2, 4); \
+        GUI_SetPenSize(1); \
+        \
+        /* 绘制向上的小三角形指示器 */ \
+        GUI_POINT small_arrow[3] = { \
+            {highlight_x1 + (highlight_x2 - highlight_x1) / 2 - 4, highlight_y2 + 6}, \
+            {highlight_x1 + (highlight_x2 - highlight_x1) / 2 + 4, highlight_y2 + 6}, \
+            {highlight_x1 + (highlight_x2 - highlight_x1) / 2, highlight_y2 + 2} \
+        }; \
+        GUI_SetColor(0xFF0000); /* 红色三角 */ \
+        GUI_FillPolygon(small_arrow, 3, 0, 0); \
+    }
+
+    // 6. 重绘所有参数值宏
+    #define REDRAW_ALL_PARAMS() \
+    DRAW_DATETIME_PARAMS(); \
+    DRAW_DEVICE_PARAMS();
+	
+    /*================================================================================================================================*/	
+	
+    // 首次绘制完整界面
+    if(first_draw) {
+        // ==================== 背景设置 ====================
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_Clear();
+        
+        // 渐变色背景
+        GUI_RECT bg_rect = {0, 0, 320, 240};
+        GUI_DrawGradientV(bg_rect.x0, bg_rect.y0, bg_rect.x1, bg_rect.y1, GUI_LIGHTBLUE, GUI_WHITE);
+        
+        // ==================== 顶部标题栏 (0-40) ====================
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRoundedRect(5, 5, 315, 35, 8);
+        
+        GUI_SetColor(GUI_LIGHTBLUE);
+        GUI_DrawRoundedRect(5, 5, 315, 35, 8);
+
+        // 添加标题栏阴影
+        GUI_SetColor(GUI_GRAY_C0);
+        GUI_DrawLine(6, 36, 316, 36);
+        
+        // 标题
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_2424);
+        GUI_DispStringAt("参数设置", 15, 10);
+        
+        // 时间显示
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_DispStringAt(current_time_str, 132, 9);
+        
+        // 绘制电池外框
+        GUI_SetColor(GUI_WHITE);
+        GUI_DrawRect(235, 13, 260, 27);  // 电池主体
+        GUI_FillRect(260, 17, 262, 23);  // 电池正极
+        
+        // 根据电量等级绘制电池内部
+        GUI_RECT battery_fill = {237, 14, 237 + (current_battery_level * 5), 24};
+        
+        switch(current_battery_level) {
+            case 1: GUI_SetColor(GUI_RED); break;
+            case 2: GUI_SetColor(GUI_ORANGE); break;
+            case 3: GUI_SetColor(GUI_YELLOW); break;
+            case 4: GUI_SetColor(GUI_GREEN); break;
+        }
+        
+        GUI_FillRectEx(&battery_fill);
+        
+        // 电压数值
+		GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_Font16_ASCII);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt(current_battery_str, 270, 12);
+        
+        // 添加标题栏阴影
+        GUI_SetColor(GUI_GRAY_C0);
+        GUI_DrawLine(6, 41, 316, 41);
+        
+        // ==================== 时间日期设置卡片 (50-130) ====================
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(10, 50, 310, 130, 12);
+        
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetPenSize(2);
+        GUI_DrawRoundedRect(10, 50, 310, 130, 12);
+        GUI_SetPenSize(1);
+        
+        // 时间日期标题背景
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRoundedRect(15, 55, 305, 75, 8);
+        
+        // 时间日期标题
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("时间日期设置", 20, 58);
+        
+        // 宏显示时间日期参数
+		DRAW_DATETIME_PARAMS();
+        
+        // ==================== 设备参数设置卡片 (140-220) ====================
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(10, 140, 310, 220, 12);
+        
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetPenSize(2);
+        GUI_DrawRoundedRect(10, 140, 310, 220, 12);
+        GUI_SetPenSize(1);
+        
+        // 设备参数标题背景
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRoundedRect(15, 145, 305, 165, 8);
+        
+        // 设备参数标题
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("设备参数设置", 20, 148);
+        
+        // 参数标签 - 优化重复的GUI设置
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(0x696969);
+		
+		//宏设备参数标签
+        DRAW_DEVICE_LABELS();
+        
+        //宏显示设备参数
+        DRAW_DEVICE_PARAMS();
+        
+        first_draw = 0;
+    }
+    
+    /*=============================================================局部更新区域===================================================================*/	
+    
+    // 顶部标题栏 - 时间更新
+    if(strcmp(last_time_str, current_time_str) != 0) {
+        GUI_SetColor(GUI_DARKBLUE);
+		GUI_FillRect(130, 8, 210, 32);
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt(current_time_str, 132, 9);
+        strcpy(last_time_str, current_time_str);
+    }
+    
+    // 顶部标题栏 - 电池状态更新
+    if(last_battery_level != current_battery_level || strcmp(last_battery_str, current_battery_str) != 0) {
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRect(220, 8, 310, 30);
+        
+        // 绘制电池外框
+        GUI_SetColor(GUI_WHITE);
+        GUI_DrawRect(235, 13, 260, 27);
+        GUI_FillRect(260, 17, 262, 23);
+        
+        // 根据电量等级绘制电池内部
+        GUI_RECT battery_fill = {237, 14, 237 + (current_battery_level * 5), 24};
+        
+        switch(current_battery_level) {
+            case 1: GUI_SetColor(GUI_RED); break;
+            case 2: GUI_SetColor(GUI_ORANGE); break;
+            case 3: GUI_SetColor(GUI_YELLOW); break;
+            case 4: GUI_SetColor(GUI_GREEN); break;
+        }
+        
+        GUI_FillRectEx(&battery_fill);
+        
+        // 电压数值
+        GUI_SetFont(&GUI_Font16_ASCII);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt(current_battery_str, 270, 12);
+        
+        last_battery_level = current_battery_level;
+        strcpy(last_battery_str, current_battery_str);
+    }
+    
+    // 选择指示器更新
+    if(last_select_menu_id != SelectMenuID) {
+        GUI_SetColor(GUI_WHITE);
+        
+        // 清除所有参数的背景高亮和周围箭头区域 (加大清除范围)
+        GUI_FillRect(15, 80, 305, 120);   // 时间日期区域
+        GUI_FillRect(85, 165, 290, 225);  // 设备参数区域
+        
+        // 重绘被清除的静态内容 - 使用宏定义
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(0x696969);
+        DRAW_DEVICE_LABELS();
+        
+        // 重绘设备参数卡片边框
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetPenSize(2);
+        GUI_DrawRoundedRect(10, 140, 310, 220, 12);
+        GUI_SetPenSize(1);
+        
+        // 恢复时间日期分隔符
+        DRAW_DATETIME_SEPARATORS();
+        
+        // 重绘所有参数值 - 使用宏定义
+        REDRAW_ALL_PARAMS();
+        
+        // 绘制新的选择指示器 - 使用宏定义
+        DRAW_SELECTION_INDICATOR();
+        
+        last_select_menu_id = SelectMenuID;
+    }
+    
+    // 参数值局部更新
+    #define UPDATE_PARAM(last_str, current_str, x1, y1, x2, y2, disp_x, disp_y, menu_id) \
+        if(strcmp(last_str, current_str) != 0) { \
+            GUI_SetColor(GUI_WHITE); \
+            GUI_FillRect(x1, y1, x2, y2); \
+            GUI_SetBkColor(GUI_WHITE); \
+            GUI_SetFont(&GUI_Font20_ASCII); \
+            GUI_SetColor((SelectMenuID == menu_id) ? GUI_BLACK : 0x2F4F4F); \
+            GUI_DispStringAt(current_str, disp_x, disp_y); \
+            strcpy(last_str, current_str); \
+        }
+    
+    // 时间日期参数更新
+    UPDATE_PARAM(last_year_str, current_year_str, 23, 88, 83, 108, 25, 90, 1);
+    UPDATE_PARAM(last_month_str, current_month_str, 83, 88, 103, 108, 85, 90, 2);
+    UPDATE_PARAM(last_day_str, current_day_str, 125, 88, 152, 108, 125, 90, 3);
+    UPDATE_PARAM(last_hour_str, current_hour_str, 173, 88, 203, 108, 175, 90, 4);
+    UPDATE_PARAM(last_minute_str, current_minute_str, 213, 88, 243, 108, 215, 90, 5);
+    UPDATE_PARAM(last_second_str, current_second_str, 253, 88, 283, 108, 255, 90, 6);
+    DRAW_DATETIME_SEPARATORS();
+    
+    // 设备参数更新
+    UPDATE_PARAM(last_device_id_str, current_device_id_str, 93, 173, 138, 193, 95, 175, 7);
+    UPDATE_PARAM(last_temp_str, current_temp_str, 93, 193, 135, 213, 95, 195, 8);
+    UPDATE_PARAM(last_max_pressure_str, current_max_pressure_str, 233, 173, 275, 193, 235, 175, 9);
+    UPDATE_PARAM(last_min_pressure_str, current_min_pressure_str, 233, 193, 275, 213, 235, 195, 10);
+    DRAW_SELECTION_INDICATOR();
+    
+    #undef UPDATE_PARAM
+    
+    I2CFlag = 0;
+}
+
+
+void		ThirdInterfaceFunc(void)						//	第三页 - 信息界面
+{
+    static uint8_t first_draw = 1;
+    static uint8_t last_menu_id = 0xFF;
+    
+    // 静态变量存储上次显示的值
+    static char last_time_str[20] = {0};
+    static char last_battery_str[10] = {0};
+    static uint8_t last_battery_level = 0xFF;
+    static char last_sleep_time_str[10] = {0};
+    
+    // 检查页面重置标志或页面切换
+    if(g_page_reset_flag || last_menu_id != MenuID) {
+        first_draw = 1;
+        g_page_reset_flag = 0;
+        last_menu_id = MenuID;
+        
+        // 清空所有静态变量
+        memset(last_time_str, 0, sizeof(last_time_str));
+        memset(last_battery_str, 0, sizeof(last_battery_str));
+        last_battery_level = 0xFF;
+        memset(last_sleep_time_str, 0, sizeof(last_sleep_time_str));
+    }
+    
+    // 当前值变量声明
+    char current_time_str[20], current_battery_str[10], current_sleep_time_str[10];
+    uint8_t current_battery_level;
+    
+    I2CFlag = 1;
+    
+    // 定时读取传感器数据
+    static uint32_t last_time_update = 0;
+    if (HAL_GetTick() - last_time_update > 1000) {
+        PCF8563_GetTime(&current_time);
+        PCF8563_GetDate(&current_date);
+        last_time_update = HAL_GetTick();
+    }
+    
+    // 读取电池电压
+    static uint32_t last_battery_update = 0;
+    if (HAL_GetTick() - last_battery_update > 500) {
+        battery_voltage = Get_Battery_Voltage();
+        last_battery_update = HAL_GetTick();
+    }
+    
+    // 生成当前显示字符串
+    sprintf(current_time_str, "%02d:%02d:%02d", current_time.hour, current_time.minute, current_time.second);
+    
+    // 计算电池电量等级并处理未接电池的情况
+    float display_voltage = battery_voltage;
+    if (battery_voltage < 1.0f) {
+        display_voltage = 24.0f;
+    }
+    sprintf(current_battery_str, "%.1fV", display_voltage);
+    sprintf(current_sleep_time_str, "%4d", DeepSleepCount);
+    
+    // 计算电池电量等级
+    if(display_voltage <= 20) current_battery_level = 1;
+    else if(display_voltage < 24) current_battery_level = 2;
+    else if(display_voltage < 33) current_battery_level = 3;
+    else current_battery_level = 4;
+    
+    // 首次绘制完整界面
+    if(first_draw) {
+        // ==================== 背景设置 ====================
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_Clear();
+        
+        // 绘制渐变背景
+        GUI_RECT bg_rect = {0, 0, 320, 240};
+        GUI_DrawGradientV(bg_rect.x0, bg_rect.y0, bg_rect.x1, bg_rect.y1, GUI_LIGHTBLUE, GUI_WHITE);
+        
+        // ==================== 顶部标题栏 (0-35) ====================
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRoundedRect(5, 5, 315, 35, 8);
+        GUI_SetColor(GUI_LIGHTBLUE);
+        GUI_DrawRoundedRect(5, 5, 315, 35, 8);
+        
+        // 添加标题栏阴影
+        GUI_SetColor(GUI_GRAY_C0);
+        GUI_DrawLine(6, 36, 316, 36);
+        
+        // 标题 - 信息界面
+        GUI_SetFont(&GUI_FontHZ_SimSun_2424);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt("信息界面", 12, 8);
+        
+        // ==================== 主内容区域 ====================
+        
+        // 公司信息卡片
+        GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(10, 45, 150, 145, 8);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DrawRoundedRect(10, 45, 150, 145, 8);
+        
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("希佛隆阀门集团有限公司", 25, 60);
+        GUI_DispStringAt("紧急切断阀", 25, 90);
+        
+        GUI_SetFont(&GUI_Font16_ASCII);
+        GUI_DispStringAt(DEVICE_MODEL_STR, 25, 115); 
+        
+	
+	
+		//版本信息卡片
+		GUI_SetColor(GUI_WHITE);
+        GUI_FillRoundedRect(160, 45, 310, 145, 8);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DrawRoundedRect(160, 45, 310, 145, 8);
+		
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+		GUI_DispStringAt("硬件版本", 170, 60);
+        GUI_DispStringAt("软件版本", 170, 90);
+        GUI_DispStringAt("软件日期", 170, 115);
+        
+		GUI_SetFont(&GUI_Font16_ASCII);
+		GUI_DispStringAt(HARDWARE_VERSION_STR, 245, 60);
+        GUI_DispStringAt(SOFTWARE_VERSION_STR, 245, 90);
+        
+        GUI_DispStringAt(BUILD_DATE_STR, 245, 115);
+
+		
+		
+		
+        // 休眠时间参数卡片
+        GUI_SetColor(GUI_LIGHTCYAN);
+        GUI_FillRoundedRect(10, 150, 310, 200, 8);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_DrawRoundedRect(10, 150, 310, 200, 8);
+        
+        GUI_SetBkColor(GUI_LIGHTCYAN);
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_DispStringAt("休眠时间:", 15, 167);
+        
+        // 休眠时间值显示
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetColor(0x2F4F4F);
+        GUI_DispStringAt(current_sleep_time_str, 120, 165);
+        GUI_DispStringAt("S", 180, 165);
+        
+        // 底部信息栏
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRoundedRect(10, 205, 310, 235, 8);
+        GUI_SetColor(GUI_LIGHTBLUE);
+        GUI_DrawRoundedRect(10, 205, 310, 235, 8);
+        
+        // 底部公司名称显示
+        GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_LIGHTGRAY);
+        GUI_DispStringAt("希佛隆阀门", 20, 212);
+
+        // 底部日期显示
+        char date_str[20];
+        sprintf(date_str, "20%02d-%02d-%02d", current_date.year, current_date.month, current_date.day);
+        GUI_SetFont(&GUI_Font16_ASCII);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_LIGHTGRAY);
+        GUI_DispStringAt(date_str, 210, 213);
+        
+        first_draw = 0;
+    }
+    
+    // ==================== 局部更新区域 ====================
+    
+    // 顶部标题栏 - 时间
+    if(strcmp(last_time_str, current_time_str) != 0) {
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRect(130, 8, 210, 32);
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt(current_time_str, 132, 9);
+        strcpy(last_time_str, current_time_str);
+    }
+    
+    // 顶部标题栏 - 电池状态
+    if(last_battery_level != current_battery_level || strcmp(last_battery_str, current_battery_str) != 0) {
+        // 清除旧电池图标和电压
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRect(220, 8, 310, 30);
+        
+        // 绘制电池外框
+        GUI_SetColor(GUI_WHITE);
+        GUI_DrawRect(235, 13, 260, 27);
+        GUI_FillRect(260, 17, 262, 23);
+        
+        // 根据电量等级绘制电池内部
+        GUI_RECT battery_fill = {237, 14, 237 + (current_battery_level * 5), 24};
+        
+        switch(current_battery_level) {
+            case 1: GUI_SetColor(GUI_RED); break;
+            case 2: GUI_SetColor(GUI_ORANGE); break;
+            case 3: GUI_SetColor(GUI_YELLOW); break;
+            case 4: GUI_SetColor(GUI_GREEN); break;
+        }
+        
+        GUI_FillRectEx(&battery_fill);
+        
+        // 电压数值
+		GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_Font16_ASCII);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt(current_battery_str, 270, 12);
+        
+        last_battery_level = current_battery_level;
+        strcpy(last_battery_str, current_battery_str);
+    }
+    
+    // 休眠时间参数值更新
+    if(strcmp(last_sleep_time_str, current_sleep_time_str) != 0) {
+        GUI_SetColor(GUI_LIGHTCYAN);
+        GUI_FillRect(120, 165, 175, 180);
+        GUI_SetBkColor(GUI_LIGHTCYAN);
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetColor(0x2F4F4F);
+        GUI_DispStringAt(current_sleep_time_str, 120, 165);
+        strcpy(last_sleep_time_str, current_sleep_time_str);
+    }
+    
+    I2CFlag = 0;
+}
+
+
+
+void 		ForthInterfaceFunc(void) 						// 	第四页 - 历史记录
+{
+    static uint8_t first_draw = 1;
+    
+    // 静态变量存储上次显示的值
+    static char last_time_str[20] = {0};
+    static char last_battery_str[10] = {0};
+    static uint8_t last_battery_level = 0xFF;
+    
+    // 历史记录刷新相关静态变量
+    static uint32_t last_history_update = 0;
+    static uint32_t last_max_number = 0;
+    static uint32_t last_page_start = 0;
+    static uint8_t force_history_refresh = 0;
+    
+    if(g_page_reset_flag) {
+        first_draw = 1;
+        g_page_reset_flag = 0;
+        g_history_page_refresh_flag = 0;
+        force_history_refresh = 1;
+        
+        // 切换到历史页时重置缓存，执行一次完整首绘
+        memset(last_time_str, 0, sizeof(last_time_str));
+        memset(last_battery_str, 0, sizeof(last_battery_str));
+        last_battery_level = 0xFF;
+        last_history_update = 0;
+        last_max_number = 0;
+        last_page_start = 0;
+    } else if(g_history_page_refresh_flag) {
+        // 页内翻页只刷新历史列表，不再整屏重绘
+        g_history_page_refresh_flag = 0;
+        force_history_refresh = 1;
+    }
+    
+    
+    // 当前值变量声明
+    char current_time_str[20], current_battery_str[10];
+    uint8_t current_battery_level;
+    
+    I2CFlag = 1;
+    
+    // 定时读取传感器数据
+    static uint32_t last_time_update = 0;
+    if (HAL_GetTick() - last_time_update > 1000) {
+        PCF8563_GetTime(&current_time);
+        PCF8563_GetDate(&current_date);
+        last_time_update = HAL_GetTick();
+    }
+    
+    // 读取电池电压
+    static uint32_t last_battery_update = 0;
+    if (HAL_GetTick() - last_battery_update > 500) {
+        battery_voltage = Get_Battery_Voltage();
+        last_battery_update = HAL_GetTick();
+    }
+    
+    // 检查历史记录是否需要刷新（每2秒检查一次）
+    uint8_t need_history_refresh = 0;
+    uint32_t current_max_number = last_max_number;
+    if (HAL_GetTick() - last_history_update > 2000 || force_history_refresh || number != last_page_start) {
+        current_max_number = FlashRead_Uint32(0);
+        if (current_max_number != last_max_number || number != last_page_start || force_history_refresh) {
+            need_history_refresh = 1;
+            last_max_number = current_max_number;
+            last_page_start = number;
+        }
+        last_history_update = HAL_GetTick();
+        force_history_refresh = 0;
+    }
+    
+    // 生成当前显示字符串
+    sprintf(current_time_str, "%02d:%02d:%02d", current_time.hour, current_time.minute, current_time.second);
+    
+    // 计算电池电量等级并处理未接电池的情况
+    float display_voltage = battery_voltage;
+    if (battery_voltage < 1.0f) {
+        display_voltage = 24.0f;
+    }
+    sprintf(current_battery_str, "%.1fV", display_voltage);
+    
+    // 计算电池电量等级
+    if(display_voltage <= 20) current_battery_level = 1;
+    else if(display_voltage < 24) current_battery_level = 2;
+    else if(display_voltage < 33) current_battery_level = 3;
+    else current_battery_level = 4;
+    
+    // 首次绘制完整界面
+    if(first_draw) {
+        // ==================== 背景设置 ====================
+        GUI_SetBkColor(GUI_WHITE);
+        GUI_Clear();
+        
+        // 绘制渐变背景
+        GUI_RECT bg_rect = {0, 0, 320, 240};
+        GUI_DrawGradientV(bg_rect.x0, bg_rect.y0, bg_rect.x1, bg_rect.y1, GUI_LIGHTBLUE, GUI_WHITE);
+        
+        // ==================== 顶部标题栏 (0-35) ====================
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRoundedRect(5, 5, 315, 35, 8);
+        GUI_SetColor(GUI_LIGHTBLUE);
+        GUI_DrawRoundedRect(5, 5, 315, 35, 8);
+        
+        // 添加标题栏阴影
+        GUI_SetColor(GUI_GRAY_C0);
+        GUI_DrawLine(6, 36, 316, 36);
+        
+        // 标题 - 历史记录
+        GUI_SetFont(&GUI_FontHZ_SimSun_2424);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt("历史记录", 12, 8);
+        
+        // 历史列表底板只绘制一次，翻页时复用，减少整屏闪烁
+        GUI_SetColor(0xEAF4FF);
+        GUI_FillRoundedRect(5, 40, 315, 235, 10);
+        GUI_SetColor(0xB8CCE4);
+        GUI_DrawRoundedRect(5, 40, 315, 235, 10);
+        
+        first_draw = 0;
+        need_history_refresh = 1; // 首次绘制时强制刷新历史记录
+    }
+    
+    // ==================== 历史记录卡片绘制/刷新 ====================
+    if(need_history_refresh) {
+        uint32_t maxnumber = last_max_number;
+        
+        // 刷新列表区域顶部信息，增强翻页时的层次感
+        GUI_SetColor(0xEAF4FF);
+        GUI_FillRect(12, 42, 308, 58);
+        GUI_SetColor(0xB8CCE4);
+        GUI_DrawLine(15, 60, 305, 60);
+        GUI_SetBkColor(0xEAF4FF);
+        GUI_SetColor(0x5B6B7A);
+        GUI_SetFont(&GUI_Font16_ASCII);
+        if(maxnumber > 1) {
+            uint32_t total_records = maxnumber - 1;
+            uint32_t page_end = number + 4;
+            if(page_end > total_records) {
+                page_end = total_records;
+            }
+            sprintf(dispbuff, "%03lu-%03lu/%03lu", (unsigned long)number, (unsigned long)page_end, (unsigned long)total_records);
+            GUI_DispStringAt(dispbuff, 200, 43);
+        } else {
+            GUI_DispStringAt("000-000/000", 200, 43);
+        }
+        
+        // 绘制5个历史记录卡片
+        for(int i = 0; i < 5; i++) {
+            uint32_t record_number = number + i;
+            uint16_t card_y = 62 + i * 34;
+            uint16_t card_height = 31;
+            
+            // 检查记录是否存在
+            if(record_number >= maxnumber) {
+                GUI_SetColor(0xF3F4F6);
+                GUI_FillRoundedRect(10, card_y, 310, card_y + card_height, 8);
+                GUI_SetColor(0xD1D5DB);
+                GUI_DrawRoundedRect(10, card_y, 310, card_y + card_height, 8);
+                
+                GUI_SetBkColor(0xF3F4F6);
+                GUI_SetColor(0x9CA3AF);
+                GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+                GUI_DispStringAt("暂无记录", 128, card_y + 8);
+                continue;
+            }
+            
+            Flash_History_Read(maxnumber - record_number);
+            
+            GUI_COLOR card_bg_color = (i % 2 == 0) ? GUI_WHITE : 0xF8FAFC;
+            GUI_COLOR card_border_color = (i % 2 == 0) ? 0x3B82F6 : 0x10B981;
+            
+            // 每次只覆盖卡片区域，避免整块区域先擦后画造成闪烁
+            GUI_SetColor(card_bg_color);
+            GUI_FillRoundedRect(10, card_y, 310, card_y + card_height, 8);
+            GUI_SetColor(card_border_color);
+            GUI_DrawRoundedRect(10, card_y, 310, card_y + card_height, 8);
+            
+            GUI_SetBkColor(card_bg_color);
+            GUI_SetColor(0x374151);
+            
+            GUI_SetFont(&GUI_Font16_ASCII);
+            sprintf(dispbuff, "%03lu", (unsigned long)record_number);
+            GUI_DispStringAt(dispbuff, 16, card_y + 1);
+            
+            GUI_SetFont(&GUI_Font16_ASCII);
+            sprintf(dispbuff, "20%02d-%02d-%02d %02d:%02d:%02d", 
+                    HistoryData.Year, HistoryData.Month, HistoryData.Day,
+                    HistoryData.Hour, HistoryData.Min, HistoryData.Second);
+            GUI_DispStringAt(dispbuff, 46, card_y + 1);
+            
+            GUI_SetFont(&GUI_Font16_ASCII);
+            GUI_SetColor(0x6B7280);
+            sprintf(dispbuff, "%.1fMPa", HistoryData.Pressure);
+            GUI_DispStringAt(dispbuff, 46, card_y + 15);
+            
+            sprintf(dispbuff, "%.1f", HistoryData.Temperature);
+            GUI_DispStringAt(dispbuff, 118, card_y + 15);
+            
+            int x_temp_dist = GUI_GetStringDistX(dispbuff);
+            GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+            GUI_DispStringAt("℃", 118 + x_temp_dist, card_y + 15);
+            GUI_SetFont(&GUI_Font16_ASCII);
+            
+            GUI_SetFont(&GUI_FontHZ_SimSun_1616);
+            {
+                char status_str[12] = {0};
+                switch(HistoryData.Alarm) {
+                    case 0: strcpy(status_str, "正常"); 		GUI_SetColor(0x059669); break;
+                    case 1: strcpy(status_str, "关阀故障"); 	GUI_SetColor(0xDC2626); break;
+                    case 2: strcpy(status_str, "开阀故障"); 	GUI_SetColor(0xDC2626); break;
+                    case 3: strcpy(status_str, "传感器故障"); 	GUI_SetColor(0xEA580C); break;
+                    case 4: strcpy(status_str, "开阀中"); 		GUI_SetColor(0x2563EB); break;
+                    case 5: strcpy(status_str, "关阀中"); 		GUI_SetColor(0x7C3AED); break;
+                    case 6: strcpy(status_str, "已开阀"); 		GUI_SetColor(0x059669); break;
+                    case 7: strcpy(status_str, "已关阀"); 		GUI_SetColor(0x059669); break;
+                    case 8: strcpy(status_str, "超压关阀"); 	GUI_SetColor(0xDC2626); break;
+                    case 9: strcpy(status_str, "欠压关阀"); 	GUI_SetColor(0xEA580C); break;
+                    case 10: strcpy(status_str, "超温关阀"); 	GUI_SetColor(0xDC2626); break;
+                    case 11: strcpy(status_str, "远程关阀"); 	GUI_SetColor(0x2563EB); break;
+                    case 12: strcpy(status_str, "电机堵转"); 	GUI_SetColor(0xDC2626); break;
+                    default: strcpy(status_str, "未知"); 		GUI_SetColor(0x6B7280); break;
+                }
+                GUI_DispStringAt(status_str, 214, card_y + 15);
+            }
+        }
+    }
+    
+    // ==================== 局部更新区域 ====================
+    
+    // 顶部标题栏 - 时间
+    if(strcmp(last_time_str, current_time_str) != 0) {
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRect(130, 8, 210, 32);
+        GUI_SetFont(&GUI_Font20_ASCII);
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt(current_time_str, 132, 9);
+        strcpy(last_time_str, current_time_str);
+    }
+    
+    // 顶部标题栏 - 电池状态
+    if(last_battery_level != current_battery_level || strcmp(last_battery_str, current_battery_str) != 0) {
+        // 清除旧电池图标和电压
+        GUI_SetColor(GUI_DARKBLUE);
+        GUI_FillRect(220, 8, 310, 30);
+        
+        // 绘制电池外框
+        GUI_SetColor(GUI_WHITE);
+        GUI_DrawRect(235, 13, 260, 27);
+        GUI_FillRect(260, 17, 262, 23);
+        
+        // 根据电量等级绘制电池内部
+        GUI_RECT battery_fill = {237, 14, 237 + (current_battery_level * 5), 24};
+        
+        switch(current_battery_level) {
+            case 1: GUI_SetColor(GUI_RED); break;
+            case 2: GUI_SetColor(GUI_ORANGE); break;
+            case 3: GUI_SetColor(GUI_YELLOW); break;
+            case 4: GUI_SetColor(GUI_GREEN); break;
+        }
+        
+        GUI_FillRectEx(&battery_fill);
+        
+        // 电压数值
+        GUI_SetBkColor(GUI_DARKBLUE);
+        GUI_SetFont(&GUI_Font16_ASCII);
+        GUI_SetColor(GUI_WHITE);
+        GUI_DispStringAt(current_battery_str, 270, 12);
+        
+        last_battery_level = current_battery_level;
+        strcpy(last_battery_str, current_battery_str);
+    }
+    
+    I2CFlag = 0;
+}
+
+//void EepromFunc(unsigned char mType)
+//{
+//		E2CWriteFlag=0;
+
+//		I2C_Counter++;
+//		if(I2C_Counter>8)
+//			I2C_Counter=1;
+
+//		ArrayI2CData[I2C_Counter].I2C_Months=current_date.month;
+//		ArrayI2CData[I2C_Counter].I2C_Days=current_date.day;
+
+//		ArrayI2CData[I2C_Counter].I2C_Hours=current_time.hour;
+//		ArrayI2CData[I2C_Counter].I2C_Minutes=current_time.minute;
+
+//		ArrayI2CData[I2C_Counter].I2C_UP_Pressure=(uint8_t)(g_press_data.up_pressure*10);
+//		//ArrayI2CData[I2C_Counter].I2C_DN_Pressure=(uint8_t)(DN_Pressure*10);
+
+//		ArrayI2CData[I2C_Counter].CloseType=mType;
+//}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

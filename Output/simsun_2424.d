@@ -1,0 +1,9 @@
+..\..\output\simsun_2424.o: ..\..\Drivers\FONTS\SimSun_2424.c
+..\..\output\simsun_2424.o: ..\..\Middlewares\emWin\inc\GUI.H
+..\..\output\simsun_2424.o: E:\MDK\Core\ARM\5.06\Bin\..\include\stddef.h
+..\..\output\simsun_2424.o: ..\..\Middlewares\emWin\inc\GUI_ConfDefaults.h
+..\..\output\simsun_2424.o: ..\..\Middlewares\emWin\inc\GUIConf.h
+..\..\output\simsun_2424.o: ..\..\Middlewares\emWin\inc\GUI_Type.h
+..\..\output\simsun_2424.o: ..\..\Middlewares\emWin\inc\LCD.h
+..\..\output\simsun_2424.o: ..\..\Middlewares\emWin\inc\Global.h
+..\..\output\simsun_2424.o: ..\..\Middlewares\emWin\inc\GUI_Version.h
