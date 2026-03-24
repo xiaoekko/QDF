@@ -27,7 +27,7 @@
 #include "task.h"
 #include "FreeModbusApp.h"
 
-#include "version_conf.h"   // 版本信息配置
+#include "version_conf.h"   // 版本配置
 
 
 
