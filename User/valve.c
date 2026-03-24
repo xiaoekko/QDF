@@ -243,7 +243,6 @@ void HandModelFunc(void)	//开关阀逻辑，100ms执行一次
 
 			   case 1:		/* 正常开阀 */
 			   	{					
-					//CheckMotorStall();//检测电机堵转
 					
 					/* 1. 安全监测：检查紧急关阀条件 (超压、超温、外部信号) */
 					if((OverpressureCheckFunc()==1)||(OverTemperatureCheckFunc()==1)||(ExCloseSwitch==1)||(ExCloseFlag==1)||(OverTempFlag==1)||(OverPressFlag==1))
