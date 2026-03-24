@@ -1,9 +1,0 @@
-..\..\output\guiconf.o: ..\..\Middlewares\emWin\Config\GUIConf.c
-..\..\output\guiconf.o: ..\..\Middlewares\emWin\inc\GUI.h
-..\..\output\guiconf.o: E:\MDK\Core\ARM\5.06\Bin\..\include\stddef.h
-..\..\output\guiconf.o: ..\..\Middlewares\emWin\inc\GUI_ConfDefaults.h
-..\..\output\guiconf.o: ..\..\Middlewares\emWin\inc\GUIConf.h
-..\..\output\guiconf.o: ..\..\Middlewares\emWin\inc\GUI_Type.h
-..\..\output\guiconf.o: ..\..\Middlewares\emWin\inc\LCD.h
-..\..\output\guiconf.o: ..\..\Middlewares\emWin\inc\Global.h
-..\..\output\guiconf.o: ..\..\Middlewares\emWin\inc\GUI_Version.h

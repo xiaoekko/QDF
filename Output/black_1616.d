@@ -1,9 +1,0 @@
-..\..\output\black_1616.o: ..\..\Drivers\FONTS\Black_1616.c
-..\..\output\black_1616.o: ..\..\Middlewares\emWin\inc\GUI.H
-..\..\output\black_1616.o: E:\MDK\Core\ARM\5.06\Bin\..\include\stddef.h
-..\..\output\black_1616.o: ..\..\Middlewares\emWin\inc\GUI_ConfDefaults.h
-..\..\output\black_1616.o: ..\..\Middlewares\emWin\inc\GUIConf.h
-..\..\output\black_1616.o: ..\..\Middlewares\emWin\inc\GUI_Type.h
-..\..\output\black_1616.o: ..\..\Middlewares\emWin\inc\LCD.h
-..\..\output\black_1616.o: ..\..\Middlewares\emWin\inc\Global.h
-..\..\output\black_1616.o: ..\..\Middlewares\emWin\inc\GUI_Version.h

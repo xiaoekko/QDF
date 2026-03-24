@@ -1,0 +1,10 @@
+# Build outputs
+/Output/
+
+# Keil uVision local/generated files
+/Projects/**/JLinkLog.txt
+/Projects/**/JLinkSettings.ini
+/Projects/**/*.uvoptx
+/Projects/**/*.uvguix.*
+/Projects/**/DebugConfig/
+/Projects/**/RTE/
