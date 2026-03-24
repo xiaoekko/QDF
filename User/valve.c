@@ -44,6 +44,12 @@ static void SetManualActionCause(void)
 	CurrentActionCause = HistoryActionManual;
 }
 
+static void ClearManualKeyFlags(void)
+{
+	IR_KEY_OPEN_FLAG = 0;
+	IR_KEY_CLOSE_FLAG = 0;
+}
+
 static void UpdateEmergencyCloseActionCause(void)
 {
 	if((ExCloseSwitch == 1) || (ExCloseFlag == 1))
@@ -119,6 +125,10 @@ uint8_t OverTemperatureCheckFunc(void)
 
 void HandModelFunc(void)	//开关阀逻辑，100ms执行一次
 {
+		/* Motion states should not queue manual open/close requests. */
+		if((InterimState != 0) && (InterimState != 8))
+			ClearManualKeyFlags();
+
 		switch(InterimState)
 			{	
 			   case 0: 		/* 初始/待机状态 */
