@@ -12,7 +12,7 @@
 #define SOFTWARE_VERSION_STR    " V2.2.1"
 
 // 构建日期
-#define BUILD_DATE_STR          "2026-03-24"
+#define BUILD_DATE_STR          "2026-03-25"
 
 
 /* ==========================================
