@@ -169,6 +169,25 @@ void SystemInitFunc(void)
     }
 }
 
+void RefreshCurrentDateTimeFromRTC(uint8_t force_refresh)
+{
+    static uint32_t last_rtc_refresh_tick = 0;
+    PCF8563_DateTime_t datetime;
+    if (!force_refresh) {
+        uint32_t now = HAL_GetTick();
+        if ((now - last_rtc_refresh_tick) < 200) {
+            return;
+        }
+        last_rtc_refresh_tick = now;
+    } else {
+        last_rtc_refresh_tick = HAL_GetTick();
+    }
+    if (PCF8563_GetDateTime(&datetime) == PCF8563_OK) {
+        current_time = datetime.time;
+        current_date = datetime.date;
+    }
+}
+
 void CheckSystemFirstRun(void)
 {
     if(AT24CXX_ReadUchar(ADR_SYSTEM_FIRST_RUN) != 0x55) {
@@ -440,12 +459,7 @@ void 		FirstInterfaceFunc(void)      					//	第一页 - 主界面
     SetupModel(ModelID);
     
     // 读取时间
-    static uint32_t last_time_update = 0;
-    if (HAL_GetTick() - last_time_update > 1000) {
-        PCF8563_GetTime(&current_time);
-        PCF8563_GetDate(&current_date);
-        last_time_update = HAL_GetTick();
-    }
+    RefreshCurrentDateTimeFromRTC(0);
     //读取温度，电压
     static uint32_t last_temp_time = 0;
     if (HAL_GetTick() - last_temp_time > 500) {
@@ -833,11 +847,7 @@ void 		SecondInterfaceFunc(void)  						//	第二页 - 设置界面
     I2CFlag = 1;
     
     // 定时读取传感器数据
-    static uint32_t last_time_update = 0;
-    if (HAL_GetTick() - last_time_update > 1000) {
-        PCF8563_GetTime(&current_time);
-        last_time_update = HAL_GetTick();
-    }
+    RefreshCurrentDateTimeFromRTC(0);
     
     // 生成当前显示字符串
     sprintf(current_time_str, "%02d:%02d:%02d", current_time.hour, current_time.minute, current_time.second);
@@ -1236,12 +1246,7 @@ void		ThirdInterfaceFunc(void)						//	第三页 - 信息界面
     I2CFlag = 1;
     
     // 定时读取传感器数据
-    static uint32_t last_time_update = 0;
-    if (HAL_GetTick() - last_time_update > 1000) {
-        PCF8563_GetTime(&current_time);
-        PCF8563_GetDate(&current_date);
-        last_time_update = HAL_GetTick();
-    }
+    RefreshCurrentDateTimeFromRTC(0);
     
     // 读取电池电压
     static uint32_t last_battery_update = 0;
@@ -1478,12 +1483,7 @@ void 		ForthInterfaceFunc(void) 						// 	第四页 - 历史记录
     I2CFlag = 1;
     
     // 定时读取传感器数据
-    static uint32_t last_time_update = 0;
-    if (HAL_GetTick() - last_time_update > 1000) {
-        PCF8563_GetTime(&current_time);
-        PCF8563_GetDate(&current_date);
-        last_time_update = HAL_GetTick();
-    }
+    RefreshCurrentDateTimeFromRTC(0);
     
     // 读取电池电压
     static uint32_t last_battery_update = 0;

@@ -120,6 +120,7 @@ void		FirstInterfaceFunc(void);
 void		SecondInterfaceFunc(void);
 void		ThirdInterfaceFunc(void);
 void		ForthInterfaceFunc(void);
+void        RefreshCurrentDateTimeFromRTC(uint8_t force_refresh);
 
 
 void 		CheckSystemFirstRun(void);
