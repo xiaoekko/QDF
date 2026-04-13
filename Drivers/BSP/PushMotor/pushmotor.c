@@ -63,7 +63,7 @@ void PushMotor_PWM_Init(uint32_t arr, uint32_t psc)
 
     // 配置PWM通道
     sConfigOC.OCMode = TIM_OCMODE_PWM1;
-    sConfigOC.Pulse = arr/2;
+    sConfigOC.Pulse = arr;
     sConfigOC.OCPolarity = TIM_OCPOLARITY_LOW;
     sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
     HAL_TIM_PWM_ConfigChannel(&PUSHMOTOR_TIM, &sConfigOC, TIM_CHANNEL_3);
@@ -71,8 +71,4 @@ void PushMotor_PWM_Init(uint32_t arr, uint32_t psc)
     // 初始化GPIO
     PushMotor_Gpio_Init();
 }
-
-
-
-
 
