@@ -9,6 +9,9 @@ static PCF8563_Status_t PCF8563_WriteRegister(uint8_t reg_addr, uint8_t data);
 static PCF8563_Status_t PCF8563_ReadRegister(uint8_t reg_addr, uint8_t* data);
 static bool IsValidTime(const PCF8563_Time_t* time);
 static bool IsValidDate(const PCF8563_Date_t* date);
+static uint8_t IsLeapYear(uint8_t year);
+static uint8_t DaysInMonth(uint8_t year, uint8_t month);
+static void NormalizeDateTime(PCF8563_DateTime_t* datetime);
 
 
 
@@ -128,9 +131,61 @@ static bool IsValidDate(const PCF8563_Date_t* date)
     if (date == NULL) return false;
     if (date->year > 99) return false;
     if (date->month < 1 || date->month > 12) return false;
-    if (date->day < 1 || date->day > 31) return false;
+    if (date->day < 1 || date->day > DaysInMonth(date->year, date->month)) return false;
     if (date->weekday > 6) return false;
     return true;
+}
+
+static uint8_t IsLeapYear(uint8_t year)
+{
+    uint16_t full_year = 2000U + year;
+
+    if ((full_year % 400U) == 0U) return 1;
+    if ((full_year % 100U) == 0U) return 0;
+    return ((full_year % 4U) == 0U);
+}
+
+static uint8_t DaysInMonth(uint8_t year, uint8_t month)
+{
+    static const uint8_t days_in_month[] = {
+        31, 28, 31, 30, 31, 30,
+        31, 31, 30, 31, 30, 31
+    };
+
+    if (month < 1 || month > 12) {
+        return 31;
+    }
+
+    if (month == 2 && IsLeapYear(year)) {
+        return 29;
+    }
+
+    return days_in_month[month - 1];
+}
+
+static void NormalizeDateTime(PCF8563_DateTime_t* datetime)
+{
+    uint8_t max_day;
+
+    if (datetime == NULL) {
+        return;
+    }
+
+    if (datetime->date.year > 99) datetime->date.year = 99;
+    if (datetime->date.year < 23) datetime->date.year = 23;
+
+    if (datetime->date.month < 1) datetime->date.month = 1;
+    if (datetime->date.month > 12) datetime->date.month = 12;
+
+    max_day = DaysInMonth(datetime->date.year, datetime->date.month);
+    if (datetime->date.day < 1) datetime->date.day = 1;
+    if (datetime->date.day > max_day) datetime->date.day = max_day;
+
+    datetime->date.weekday %= 7;
+
+    if (datetime->time.hour > 23) datetime->time.hour = 23;
+    if (datetime->time.minute > 59) datetime->time.minute = 59;
+    if (datetime->time.second > 59) datetime->time.second = 59;
 }
 
 /**
@@ -369,15 +424,19 @@ PCF8563_Status_t PCF8563_GetDate(PCF8563_Date_t* date)
 PCF8563_Status_t PCF8563_SetDateTime(const PCF8563_DateTime_t* datetime)
 {
     PCF8563_Status_t status;
+    PCF8563_DateTime_t write_datetime;
     
     if (datetime == NULL) {
         return PCF8563_ERROR_INVALID_PARAMETER;
     }
     
-    status = PCF8563_SetTime(&datetime->time);
+    write_datetime = *datetime;
+    NormalizeDateTime(&write_datetime);
+    
+    status = PCF8563_SetTime(&write_datetime.time);
     if (status != PCF8563_OK) return status;
     
-    status = PCF8563_SetDate(&datetime->date);
+    status = PCF8563_SetDate(&write_datetime.date);
     
     return status;
 }
@@ -422,14 +481,25 @@ bool PCF8563_IsVoltageLow(void)
 // 添加时间同步函数
 void SyncTimeToRTC(void)
 {
-    // 设置时间，不检查返回值，防止阻塞日期设置
-    PCF8563_SetTime(&current_time);
-    
-    // 强制设置为0以确保参数校验通过
-    current_date.weekday = 0;
-    
-    // 设置日期到PCF8563
-    PCF8563_SetDate(&current_date);
+    PCF8563_DateTime_t datetime;
+
+    datetime.time = current_time;
+    datetime.date = current_date;
+    datetime.date.weekday = 0;
+    NormalizeDateTime(&datetime);
+
+    if (PCF8563_SetDateTime(&datetime) == PCF8563_OK) {
+        PCF8563_DateTime_t readback;
+
+        if (PCF8563_GetDateTime(&readback) == PCF8563_OK) {
+            current_time = readback.time;
+            current_date = readback.date;
+            return;
+        }
+    }
+
+    current_time = datetime.time;
+    current_date = datetime.date;
 }
 
 
