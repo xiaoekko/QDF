@@ -78,6 +78,11 @@ void InitParametersFromEEPROM(void)
         MinPressure = AUTO_LOW_MAX;
     else if(MinPressure < AUTO_LOW_MIN)
         MinPressure = AUTO_LOW_MIN;
+
+    // Restore saved sleep time after power-up or wake-up reinitialization.
+    DeepSleepCount = AT24CXX_ReadUint(ADDR_DEEP_SLEEP_ADDR);
+    if(DeepSleepCount > 3600)
+        DeepSleepCount = 0;
 }
 
 
