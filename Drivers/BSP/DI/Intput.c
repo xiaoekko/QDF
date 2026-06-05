@@ -17,12 +17,7 @@ void DI_Init(void)
     // ≈‰÷√DI2 /∑ß√≈ø™Œª (PF1)
     GPIO_InitStructure.Pin = GPIO_PIN_OPEN_SENSOR;
     HAL_GPIO_Init(GPIO_PORT_OPEN_SENSOR, &GPIO_InitStructure);
-    
-    // ≈‰÷√DI3 /‘∂≥Ãπÿ∑ß (PF2)
-	GPIO_InitStructure.Pull = GPIO_PULLDOWN;
-    GPIO_InitStructure.Pin = GPIO_PIN_ExCloseSwitch;
-    HAL_GPIO_Init(GPIO_PORT_ExCloseSwitch, &GPIO_InitStructure);
-	
+    	
     // ≈‰÷√DI4 (PF3)
     GPIO_InitStructure.Pin = GPIO_PIN_DI4_SENSOR;
     HAL_GPIO_Init(GPIO_PORT_DI4_SENSOR, &GPIO_InitStructure);
@@ -42,6 +37,11 @@ void DI_Init(void)
     // ≈‰÷√DI8 (PF7)
     GPIO_InitStructure.Pin = GPIO_PIN_DI8_SENSOR;
     HAL_GPIO_Init(GPIO_PORT_DI8_SENSOR, &GPIO_InitStructure);
+	
+	    // ≈‰÷√DI3 /‘∂≥Ãπÿ∑ß (PF2)
+	GPIO_InitStructure.Pull = GPIO_PULLUP;
+    GPIO_InitStructure.Pin = GPIO_PIN_ExCloseSwitch;
+    HAL_GPIO_Init(GPIO_PORT_ExCloseSwitch, &GPIO_InitStructure);
 }
 
 
