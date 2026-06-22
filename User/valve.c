@@ -70,6 +70,71 @@ uint16_t 			TempCount2=0;
 uint16_t 			TempCount3=0;
 uint16_t 			TempCount4=0;
 
+static uint8_t ShouldStartRemoteCloseFlow(void)
+{
+	static uint8_t remote_close_latched = 0;
+
+	if(ExCloseSwitch != 1)
+		remote_close_latched = 0;
+
+	if(ExCloseFlag == 1)
+		return 1;
+
+	if((ExCloseSwitch == 1) && (remote_close_latched == 0))
+	{
+		remote_close_latched = 1;
+		return 1;
+	}
+
+	return 0;
+}
+
+static void PrepareRemoteCloseFlow(void)
+{
+	CurrentActionCause = HistoryActionRemoteClose;
+	RemoteCloseCauseFlag = 1;
+	ExCloseFlag = 0;
+	CloseErrorCount = 0;
+	TempCount = 0;
+	TempCount1 = 0;
+	TempCount2 = 0;
+	TempCount3 = 0;
+	InterimState = 9;
+}
+
+static void FinishEmergencyCloseFlow(void)
+{
+	TempCount = 0;
+	TempCount1 = 0;
+	TmpStateXFlag = 7;
+	OverLoadFlag = 1;
+
+	MotorStop();
+	KeepStop();
+	StopFlag = 1;
+
+	if(RemoteCloseCauseFlag == 1)
+		ErrorAlarm = RemoteClose;
+	else if(g_press_data.up_pressure > MaxPressure)
+		ErrorAlarm = OverPressClose;
+	else if(g_press_data.up_pressure < MinPressure)
+		ErrorAlarm = UnderPressClose;
+	else if(OverTemperatureCheckFunc() == 1)
+		ErrorAlarm = OverTempClose;
+	else
+		ErrorAlarm = NoError;
+
+	RemoteCloseCauseFlag = 0;
+	InterimState = 0;
+
+	if(OverLoadFlag == 1)
+		uCoilsStatusLO.Bit4 = OverLoadFlag;
+	if(OverTemperatureFlag == 1)
+		uCoilsStatusLO.Bit5 = OverTemperatureFlag;
+
+	ucRegCoilsBuf[0] = uCoilsStatusLO.Byte;
+}
+
 
 /*
 检查压力是否超过设定的上限或低于下限
@@ -128,6 +193,12 @@ void HandModelFunc(void)	//开关阀逻辑，100ms执行一次
 		/* Motion states should not queue manual open/close requests. */
 		if((InterimState != 0) && (InterimState != 8))
 			ClearManualKeyFlags();
+
+		/* Remote close has the highest priority and can re-enter from any state. */
+		if(ShouldStartRemoteCloseFlow() && !(RemoteCloseCauseFlag == 1 && InterimState == 9))
+		{
+			PrepareRemoteCloseFlow();
+		}
 
 		switch(InterimState)
 			{	
@@ -738,7 +809,7 @@ void HandModelFunc(void)	//开关阀逻辑，100ms执行一次
 					LowFreqFlag=0;
 					LowFreqCount=0;
 
-					if(CloseSensor==1)						//不处于关阀状态，执行关阀序列
+					if((CloseSensor==1) || (RemoteCloseCauseFlag == 1))		//远程关阀时，即使已关到位也执行一轮关阀序列
 						{
 					 		TempCount++;
 							
@@ -766,37 +837,44 @@ void HandModelFunc(void)	//开关阀逻辑，100ms执行一次
 							/* 阶段 4: 超时/故障处理 - >8s */
 							else
 								{
-									TempCount1=0;
-									TmpStateXFlag=6;
-									CloseErrorCount++;
-									
-									MotorStop();
-									KeepStop();			
-									
-									if(CloseErrorCount >= 3)
+									if((RemoteCloseCauseFlag == 1) && (CloseSensor == 0))
 										{
-											TempCount=0;
-											StopFlag=1;
-
-											ErrorAlarm=CloseError;
-											InterimState=8;			//达到最大重试次数后跳转到故障报警状态
-											
-											/* 更新线圈状态 */
-											if(OverLoadFlag==1)
-												uCoilsStatusLO.Bit4=OverLoadFlag;
-											if(OverTemperatureFlag==1)
-												uCoilsStatusLO.Bit5=OverTemperatureFlag;
-											ucRegCoilsBuf[0]=uCoilsStatusLO.Byte;
+											FinishEmergencyCloseFlow();
 										}
 									else
 										{
-											TempCount=0;
-											ErrorAlarm=Closing;
-											InterimState=9;			//未达到最大重试次数，重新执行紧急关阀
+											TempCount1=0;
+											TmpStateXFlag=6;
+											CloseErrorCount++;
+											
+											MotorStop();
+											KeepStop();			
+											
+											if(CloseErrorCount >= 3)
+												{
+													TempCount=0;
+													StopFlag=1;
+
+													ErrorAlarm=CloseError;
+													InterimState=8;			//达到最大重试次数后跳转到故障报警状态
+													
+													/* 更新线圈状态 */
+													if(OverLoadFlag==1)
+														uCoilsStatusLO.Bit4=OverLoadFlag;
+													if(OverTemperatureFlag==1)
+														uCoilsStatusLO.Bit5=OverTemperatureFlag;
+													ucRegCoilsBuf[0]=uCoilsStatusLO.Byte;
+												}
+											else
+												{
+													TempCount=0;
+													ErrorAlarm=Closing;
+													InterimState=9;			//未达到最大重试次数，重新执行紧急关阀
+												}
 										}
 								}
 						}
-					else 		//处于关阀状态 (CloseSensor == 0)
+					else 		//处于关阀状态 (CloseSensor == 0)，非远程关阀只执行复位确认
 						{
 							TempCount1++;
 							
@@ -810,38 +888,7 @@ void HandModelFunc(void)	//开关阀逻辑，100ms执行一次
 							/* 阶段 2: 完成关阀流程 */
 							else
 								{
-									TempCount=0;
-									TempCount1=0;
-									TmpStateXFlag=7;
-									
-									OverLoadFlag=1;			//标记操作完成或触发保护标志
-									
-									MotorStop();
-									KeepStop();
-
-									StopFlag=1;
-                                    /* 根据关阀触发原因判断最终状态 */
-                                    if(RemoteCloseCauseFlag == 1)
-                                        ErrorAlarm=RemoteClose;                       //远程关阀
-                                    else if(g_press_data.up_pressure>MaxPressure)            //超压关阀
-                                        ErrorAlarm=OverPressClose;
-                                    else if (g_press_data.up_pressure<MinPressure)
-                                        ErrorAlarm=UnderPressClose;                      //欠压关阀
-                                    else if (OverTemperatureCheckFunc()==1)
-                                        ErrorAlarm=OverTempClose;                        //超温关阀
-                                    else
-                                        ErrorAlarm=NoError;                              //正常关阀
-                                    RemoteCloseCauseFlag = 0;
-									
-									InterimState=0;			//返回初始状态									
-								
-									/* 更新线圈状态 */
-									if(OverLoadFlag==1)
-										uCoilsStatusLO.Bit4=OverLoadFlag;
-									if(OverTemperatureFlag==1)
-										uCoilsStatusLO.Bit5=OverTemperatureFlag;
-									
-									ucRegCoilsBuf[0]=uCoilsStatusLO.Byte;
+									FinishEmergencyCloseFlow();
 								}
 
 						}
