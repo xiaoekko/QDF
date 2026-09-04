@@ -767,15 +767,17 @@ void modbus_task(void *p_arg) {
 		
         /* 处理 Modbus 远程控制指令（Coil 0: 开阀，Coil 1: 关阀） */
         /* 使用位掩码直接检测，并在处理后自动清除（点动模式），防止被后续逻辑覆盖 */
-		if(ucRegCoilsBuf[0] & 0x01) 
+        /* Modbus open command disabled: this interface only supports remote close. */
+        /*		if(ucRegCoilsBuf[0] & 0x01)
 		{
             IR_KEY_OPEN_FLAG = 1;        // 触发开阀信号
             ucRegCoilsBuf[0] &= ~0x01;   // 清除指令位
 		}
+        */
 		
 		if(ucRegCoilsBuf[0] & 0x02) 
 		{
-            IR_KEY_CLOSE_FLAG = 1;       // 触发关阀信号
+            ModbusCloseRequestFlag = 1;  // normal remote close request
             ucRegCoilsBuf[0] &= ~0x02;   // 清除指令位
 		}
 

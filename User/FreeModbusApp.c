@@ -18,6 +18,7 @@ bitfield8  	uInputStatusHI;
 bitfield8  	uInputStatusLO;
 
 unsigned char RegHoldingOKFlag=0;
+volatile uint8_t ModbusCloseRequestFlag = 0;
 //输入寄存器内容   0x04  模拟量输入
 uint16_t usRegInputBuf[REG_INPUT_NREGS] = {0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000
 										,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000,0x0000};

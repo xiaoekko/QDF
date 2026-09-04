@@ -48,6 +48,27 @@ static void ClearManualKeyFlags(void)
 {
 	IR_KEY_OPEN_FLAG = 0;
 	IR_KEY_CLOSE_FLAG = 0;
+	ModbusCloseRequestFlag = 0;
+}
+
+static uint8_t IsCloseRequestPending(void)
+{
+	return (uint8_t)((IR_KEY_CLOSE_FLAG != 0U) ||
+					 (ModbusCloseRequestFlag != 0U));
+}
+
+static void ConsumeCloseRequest(void)
+{
+	IR_KEY_CLOSE_FLAG = 0;
+	ModbusCloseRequestFlag = 0;
+}
+
+static void SetCloseActionCause(void)
+{
+	if(ModbusCloseRequestFlag != 0U)
+		CurrentActionCause = HistoryActionRemoteClose;
+	else
+		SetManualActionCause();
 }
 
 static void UpdateEmergencyCloseActionCause(void)
@@ -293,10 +314,10 @@ void HandModelFunc(void)	//开关阀逻辑，100ms执行一次
 										  	}
 								}
 							/* 响应关阀按键 */
-							else if(IR_KEY_CLOSE_FLAG)
+							else if(IsCloseRequestPending())
 								{
-									SetManualActionCause();
-									IR_KEY_CLOSE_FLAG = 0; // 清除按键标志
+									SetCloseActionCause();
+									ConsumeCloseRequest();
 									
 									 /* 情况 A: 传感器显示已关阀 */
 									 if(CloseSensor==0)
@@ -778,10 +799,10 @@ void HandModelFunc(void)	//开关阀逻辑，100ms执行一次
 							}
 						}
 					}
-					else if(IR_KEY_CLOSE_FLAG) // 按下关阀键
+					else if(IsCloseRequestPending()) // 按下关阀键
 					{
-						SetManualActionCause();
-						IR_KEY_CLOSE_FLAG = 0;
+						SetCloseActionCause();
+						ConsumeCloseRequest();
 						LowFreqFlag = 0;
 						LowFreqCount = 0;
 						

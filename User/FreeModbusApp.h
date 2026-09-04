@@ -73,6 +73,8 @@ typedef union{
 /* Private variables ---------------------------------------------------------*/
 
 extern unsigned char RegHoldingOKFlag;
+/* Set by the Modbus task when coil 1 requests a normal remote close. */
+extern volatile uint8_t ModbusCloseRequestFlag;
 //输入寄存器内容   0x04  模拟量输入
 extern	uint16_t usRegInputBuf[REG_INPUT_NREGS] ;
 //寄存器起始地址

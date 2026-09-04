@@ -117,7 +117,7 @@ void SystemInitFunc(void)
     number = 1;
     FlashLocate = 0;
 
-    DeviceID = 1;
+    DeviceID = 3;
     AlarmTemperatureValue = 50.0f;
     OverTemperatureFlag = 0;
 
