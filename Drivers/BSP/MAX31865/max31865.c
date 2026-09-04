@@ -1,6 +1,9 @@
 #include "max31865.h"
 #include <math.h>
 
+#define MAX31865_SENSOR_ERROR_TEMP      16.5f
+#define MAX31865_MIN_VALID_TEMP         (-45.0f)
+
 
 /**
  * @brief  »Ìº˛SPI—” ±
@@ -234,7 +237,14 @@ float MAX31865_CalculateTemperature(uint16_t rtd_value, float rtd_nominal, float
 float MAX31865_GetTemperature(void)
 {
     uint16_t rtd_value = MAX31865_ReadRTD();
-    return MAX31865_CalculateTemperature(rtd_value, 100.0f, 430.0f);
+    float temperature = MAX31865_CalculateTemperature(rtd_value, 100.0f, 430.0f);
+
+    if ((rtd_value == 0U) || (temperature != temperature) || (temperature <= MAX31865_MIN_VALID_TEMP))
+    {
+        return MAX31865_SENSOR_ERROR_TEMP;
+    }
+
+    return temperature;
 }
 
 /**
