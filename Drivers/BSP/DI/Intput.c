@@ -19,7 +19,7 @@ void DI_Init(void)
     HAL_GPIO_Init(GPIO_PORT_OPEN_SENSOR, &GPIO_InitStructure);
     
     // ≈‰÷√DI3 /‘∂≥Ãπÿ∑ß (PF2)
-	GPIO_InitStructure.Pull = GPIO_PULLDOWN;
+	//GPIO_InitStructure.Pull = GPIO_PULLDOWN;
     GPIO_InitStructure.Pin = GPIO_PIN_ExCloseSwitch;
     HAL_GPIO_Init(GPIO_PORT_ExCloseSwitch, &GPIO_InitStructure);
 	
